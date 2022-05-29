@@ -1,6 +1,4 @@
-FROM ghcr.io/sdr-enthusiasts/docker-baseimage:python
-
-ENV TCP_PORT=7374
+FROM ghcr.io/sdr-enthusiasts/docker-baseimage:soapyrtlsdr
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -12,13 +10,12 @@ RUN set -x && \
     TEMP_PACKAGES+=(git) && \
     # packages needed for my sanity
     KEPT_PACKAGES+=(nano) && \
+    # packages needed for DSP
+    KEPT_PACKAGES+=(python3-scipy) && \
     # packages needed to build
     TEMP_PACKAGES+=(build-essential) && \
     TEMP_PACKAGES+=(cmake) && \
     TEMP_PACKAGES+=(pkg-config) && \
-    # packages needed for SDRplay driver
-    TEMP_PACKAGES+=(libusb-1.0-0-dev) && \
-    KEPT_PACKAGES+=(libusb-1.0-0) && \
     # install packages
     apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -29,23 +26,14 @@ COPY sdrplay/ /src/sdrplay/
 
 # hadolint ignore=DL3008,SC2086,DL4006,SC2039
 RUN set -x && \
-    # Deploy rtlmuxer
-    git clone https://github.com/rpatel3001/rtlmuxer.git /src/rtlmuxer && \
-    pushd /src/rtlmuxer && \
-    make && \
-    cp rtlmuxer /usr/local/bin && \
-    popd && \
     # install SDRPlay driver
-    mkdir -p /etc/udev/rules.d && \
     pushd /src/sdrplay && \
     chmod +x install.sh && \
     ./install.sh && \
     popd && \
-    # install SDRplay TCP server
-    git clone https://github.com/SDRplay/RSPTCPServer.git /src/sdrplay/rsp_tcp && \
-    pushd /src/sdrplay/rsp_tcp && \
-    patch --verbose -N < ../rsp_tcp.patch && \
-    sed -i "s#\([^f]\)printf(#\1fprintf(stderr, #" rsp_tcp.c && \
+    # install SoapySDRPlay
+    git clone https://github.com/pothosware/SoapySDRPlay3.git /src/sdrplay/SoapySDRPlay3 && \
+    pushd /src/sdrplay/SoapySDRPlay3 && \
     mkdir build && \
     pushd build && \
     cmake .. && \
