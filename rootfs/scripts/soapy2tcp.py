@@ -16,12 +16,12 @@ def rx_thread():
 
     # parse params to open and initialize SoapySDR device
     args = dict(kv.split("=") for kv in environ["SOAPY"].split(","))
-    print("[rx] Opening SoapySDR device with parameters: %s" % args)
+    print(f"[rx] Opening SoapySDR device with parameters: {args}")
     sdr = SoapySDR.Device(args)
 
     try:
         rate = int(environ["RATE"])
-        print("[rx] Setting sample rate to: %d" % rate)
+        print(f"[rx] Setting sample rate to: {rate/1e6} MHz")
         sdr.setSampleRate(SOAPY_SDR_RX, 0, rate)
     except KeyError:
         print("[rx] Missing RATE env var!")
@@ -29,21 +29,21 @@ def rx_thread():
 
     try:
         ppm = int(environ["PPM"])
-        print("[rx] Setting frequency correction to: %d" % ppm)
+        print(f"[rx] Setting frequency correction to: {ppm} ppm")
         sdr.setFrequencyCorrection(SOAPY_SDR_RX, 0, ppm)
     except KeyError:
         pass
 
     try:
         freq = int(environ["FREQ"])
-        print("[rx] Setting center frequency to: %d" % freq)
+        print(f"[rx] Setting center frequency to: {freq/1e6} MHz")
         sdr.setFrequency(SOAPY_SDR_RX, 0, freq)
     except KeyError:
         print("[rx] Missing FREQ env var!")
 
     try:
         bw = int(environ["BANDWIDTH"])
-        print("[rx] Setting filter bandwidth to: %d" % bw)
+        print(f"[rx] Setting filter bandwidth to: {bw/1e6} MHz")
         sdr.setBandwidth(SOAPY_SDR_RX, 0, bw)
     except KeyError:
         pass
@@ -52,7 +52,7 @@ def rx_thread():
         sdr.setGainMode(SOAPY_SDR_RX, 0, False)
         try:
             gain = float(environ["GAIN"])
-            print("[rx] Setting gain to: %f" % gain)
+            print(f"[rx] Setting gain to: {gain} dB")
             sdr.setGain(SOAPY_SDR_RX, 0, gain)
         except ValueError:
             gains = dict(kv.split("=") for kv in environ["GAIN"].split(","))
@@ -61,10 +61,10 @@ def rx_thread():
                     print("[rx] Enabling AGC")
                     sdr.setGainMode(SOAPY_SDR_RX, 0, True)
                     if(gains[g].lower() != "true"):
-                        print("[rx] Setting AGC setpoint to: %f" % float(gains[g]))
+                        print(f"[rx] Setting AGC setpoint to: {gains[g]} dB")
                         sdr.writeSetting("agc_setpoint", float(gains[g]))
                 else:
-                    print("[rx] Setting gain %s to: %f" % (g, float(gains[g])))
+                    print(f"[rx] Setting gain {g} to: {gains[g]}")
                     sdr.setGain(SOAPY_SDR_RX, 0, g, float(gains[g]))
     except KeyError:
         pass
@@ -73,10 +73,10 @@ def rx_thread():
     atexit.register(sdr.closeStream, rxStream)
 
     mtu = sdr.getStreamMTU(rxStream)
-    print("[rx] Using stream MTU: %d" % mtu)
+    print(f"[rx] Using stream MTU: {mtu}")
 
     numbufs = 10
-    print("[rx] Using %d receive buffers" % numbufs)
+    print(f"[rx] Using {numbufs} receive buffers")
 
     sdr.activateStream(rxStream)
     atexit.register(sdr.deactivateStream, rxStream)
@@ -89,13 +89,13 @@ def rx_thread():
     rx_init.set()
 
     status = sdr.readStream(rxStream, [inbufs[bufidx]], mtu)
-    print("[rx] Actual stream transfer size: %d" % status.ret)
+    print(f"[rx] Actual stream transfer size: {status.ret}")
 
     while True:
         status = sdr.readStream(rxStream, [inbufs[bufidx]], mtu)
         samps = status.ret
         if samps < 0:
-            print("[rx] failed to read stream: %s" % status)
+            print(f"[rx] failed to read stream: {status}")
             continue
         try:
             if tx_init.is_set():
@@ -103,7 +103,7 @@ def rx_thread():
                 bufidx = (bufidx+1) % numbufs
         except Full:
             print("[rx] %d element receive queue full, after %f seconds" %
-                  (numbufs, (time() - last) * 1000 / numbufs))
+                  (numbufs, (time() - last)))
             last = time()
             with rxq.mutex:
                 rxq.queue.clear()
@@ -158,13 +158,13 @@ def thread_wrapper(label, func, *args):
     while True:
         try:
             print(f"[{label}] starting thread")
-            sleep(1)
             func(*args)
         except BaseException:
             print(traceback.format_exc())
             print(f"[{label}] exception; restarting thread")
         else:
             print(f"[{label}] thread function returned; restarting thread")
+        sleep(1)
 
 
 def main():
