@@ -11,85 +11,18 @@ import traceback
 from scipy.signal import cheby2, sosfilt, sosfilt_zi
 
 
-def rx_thread(rx_init):
-    global freq, rate, inbufs, mtu, rxq, numbufs
-
-    # parse params to open and initialize SoapySDR device
-    args = dict(kv.split("=") for kv in environ["SOAPY"].split(","))
-    print(f"[rx] Opening SoapySDR device with parameters: {args}")
-    sdr = SoapySDR.Device(args)
-
-    try:
-        rate = int(environ["RATE"])
-        print(f"[rx] Setting sample rate to: {rate/1e6} MHz")
-        sdr.setSampleRate(SOAPY_SDR_RX, 0, rate)
-    except KeyError:
-        rate = sdr.getSampleRate(SOAPY_SDR_RX, 0)
-        print(f"[rx] Missing RATE env var, using driver default {rate/1e6} MHz")
-
-    try:
-        ppm = int(environ["PPM"])
-        print(f"[rx] Setting frequency correction to: {ppm} ppm")
-        sdr.setFrequencyCorrection(SOAPY_SDR_RX, 0, ppm)
-    except KeyError:
-        pass
-
-    try:
-        freq = int(environ["FREQ"])
-        print(f"[rx] Setting center frequency to: {freq/1e6} MHz")
-        sdr.setFrequency(SOAPY_SDR_RX, 0, freq)
-    except KeyError:
-        freq = sdr.getFrequency(SOAPY_SDR_RX, 0)
-        print(f"[rx] Missing FREQ env var, using driver default {freq/1e6} MHz")
-
-    try:
-        bw = int(environ["BANDWIDTH"])
-        print(f"[rx] Setting filter bandwidth to: {bw/1e6} MHz")
-        sdr.setBandwidth(SOAPY_SDR_RX, 0, bw)
-    except KeyError:
-        pass
-
-    try:
-        sdr.setGainMode(SOAPY_SDR_RX, 0, False)
-        try:
-            gain = float(environ["GAIN"])
-            print(f"[rx] Setting gain to: {gain} dB")
-            sdr.setGain(SOAPY_SDR_RX, 0, gain)
-        except ValueError:
-            gains = dict(kv.split("=") for kv in environ["GAIN"].split(","))
-            for g in gains:
-                if(g.lower() == "agc"):
-                    print("[rx] Enabling AGC")
-                    sdr.setGainMode(SOAPY_SDR_RX, 0, True)
-                    if(gains[g].lower() != "true"):
-                        print(f"[rx] Setting AGC setpoint to: {gains[g]} dB")
-                        sdr.writeSetting("agc_setpoint", float(gains[g]))
-                else:
-                    print(f"[rx] Setting gain {g} to: {gains[g]}")
-                    sdr.setGain(SOAPY_SDR_RX, 0, g, float(gains[g]))
-    except KeyError:
-        pass
-
-    rxStream = sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
-    atexit.register(sdr.closeStream, rxStream)
-
-    mtu = sdr.getStreamMTU(rxStream)
-    print(f"[rx] Using stream MTU: {mtu}")
+def rx_thread(sdr, rxStream, rxcfg, tx_init, inbufs, rxq):
+    bufidx = 0
+    last_cleared = time()
 
     sdr.activateStream(rxStream)
     atexit.register(sdr.deactivateStream, rxStream)
 
-    inbufs = np.zeros((numbufs, mtu), np.complex64)
-    bufidx = 0
-    last_cleared = time()
-
-    rx_init.set()
-
-    status = sdr.readStream(rxStream, [inbufs[bufidx]], mtu)
+    status = sdr.readStream(rxStream, [inbufs[bufidx]], rxcfg["mtu"])
     print(f"[rx] Actual stream transfer size: {status.ret}")
 
     while True:
-        status = sdr.readStream(rxStream, [inbufs[bufidx]], mtu)
+        status = sdr.readStream(rxStream, [inbufs[bufidx]], rxcfg["mtu"])
         samps = status.ret
         if samps < 0:
             print(f"[rx] failed to read stream: {status}")
@@ -98,7 +31,7 @@ def rx_thread(rx_init):
             try:
                 if tx_init[i].is_set():
                     rxq[i].put_nowait((bufidx, samps))
-                    bufidx = (bufidx+1) % numbufs
+                    bufidx = (bufidx+1) % rxcfg["numbufs"]
             except Full:
                 print("[rx] TX %d receive buffers full after %f seconds, clearing queue" %
                     (i, (time() - last_cleared)))
@@ -107,51 +40,49 @@ def rx_thread(rx_init):
                     rxq[i].queue.clear()
 
 
-def tx_thread(idx, fc, deci, port):
-    global inbufs, rxq
-
+def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        print(f"[tx {idx}] Listening on port {port}")
-        sock.bind(("0.0.0.0", port))
+        print(f"[tx {txcfg['idx']}] Listening on port {txcfg['baseport'] + txcfg['idx']}")
+        print(f"[tx {txcfg['idx']}] Shifting by {(txcfg['fc'] - rxcfg['freq'])/1e6} MHz ({rxcfg['freq']/1e6} to {txcfg['fc']/1e6}) and decimating {rxcfg['rate']/1e6} by {txcfg['deci']} to {rxcfg['rate']/txcfg['deci']/1e6}")
+        sock.bind(("0.0.0.0", txcfg["baseport"] + txcfg["idx"]))
         sock.listen()
         conn, addr = sock.accept()
-        tx_init[idx].set()
+        tx_init[txcfg["idx"]].set()
 
         with conn:
-            print(f"[tx {idx}] Connection accepted from {addr}")
+            print(f"[tx {txcfg['idx']}] Connection accepted from {addr}")
             conn.sendall(b"RTL0\x00\x00\x00\x00\x00\x00\x00\x00")
 
-            outbuf = np.zeros(mtu * 2 // deci, np.uint8)
-            sos = cheby2(4, 20, 0.9 / deci, output="sos")
+            outbuf = np.zeros(rxcfg["mtu"] * 2 // txcfg['deci'], np.uint8)
+            sos = cheby2(4, 20, 0.9 / txcfg['deci'], output="sos")
             zi = sosfilt_zi(sos)
 
-            fmix = fc - freq
-            mixper = int(np.lcm(fmix, rate) / fmix)
-            mixlen = np.ceil(mtu / mixper) * mixper * 2
-            mixtime = np.arange(0, mixlen) / rate
+            fmix = txcfg["fc"] - rxcfg["freq"]
+            mixper = int(np.lcm(fmix, rxcfg["rate"]) / fmix)
+            mixlen = np.ceil(rxcfg["mtu"] / mixper) * mixper * 2
+            mixtime = np.arange(0, mixlen) / rxcfg["rate"]
             mix = np.exp(-1j * 2*np.pi * fmix * mixtime)
             offset = 0
-            print(f"[tx {idx}] Shifting by {fmix/1e6} MHz ({freq/1e6} to {fc/1e6}) and decimating {rate/1e6} by {deci} to {rate/deci/1e6} on port {port}")
 
             while True:
-                bufidx, insamps = rxq[idx].get()
-                outsamps = insamps * 2 // deci
+                bufidx, insamps = rxq[txcfg['idx']].get()
+                outsamps = insamps * 2 // txcfg['deci']
                 sigbuf = inbufs[bufidx, :insamps]
-                if deci == 1:
+                if txcfg['deci'] == 1:
                     outbuf[0:outsamps:2] = np.real(sigbuf) * 127.5 + 127.5
                     outbuf[1:outsamps:2] = np.imag(sigbuf) * 127.5 + 127.5
                 else:
                     aabuf, zi = sosfilt(sos, sigbuf * mix[offset:offset+insamps], zi=zi)
                     offset = (offset + insamps) % mixper
-                    decbuf = aabuf[::deci]
+                    decbuf = aabuf[::txcfg['deci']]
 
                     outbuf[0:outsamps:2] = np.real(decbuf) * 127.5 + 127.5
                     outbuf[1:outsamps:2] = np.imag(decbuf) * 127.5 + 127.5
                 try:
                     conn.sendall(outbuf[:outsamps])
                 except BaseException:
-                    print(f"[tx {idx}] Disconnected from {addr}")
-                    return
+                    print(f"[tx {txcfg['idx']}] Disconnected from {addr}")
+                    tx_init[txcfg['idx']].clear()
 
 
 def thread_wrapper(func, *args):
@@ -168,41 +99,100 @@ def thread_wrapper(func, *args):
 
 
 def main():
-    global rxq, tx_init, numbufs
+    rxcfg = {}
+    txcfg = {}
+
+    # parse params to open and initialize SoapySDR device
+    args = dict(kv.split("=") for kv in environ["SOAPY"].split(","))
+    print(f"[rx] Opening SoapySDR device with parameters: {args}")
+    sdr = SoapySDR.Device(args)
+
+    rxStream = sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
+    atexit.register(sdr.closeStream, rxStream)
 
     try:
-        baseport = int(environ["BASEPORT"])
+        txcfg["baseport"] = int(environ["BASEPORT"])
     except KeyError:
-        baseport = 1234
-    print(f"[main] Starting port numbers at {baseport}")
+        txcfg["baseport"] = 1234
+    print(f"[main] Starting output channels at port {txcfg['baseport']}")
 
     try:
-        numbufs = int(environ["NUMBUFS"])
+        rxcfg["numbufs"] = int(environ["NUMBUFS"])
     except KeyError:
-        numbufs = 10
-    print(f"[rx] Using {numbufs} receive buffers")
+        rxcfg["numbufs"]  = 10
+    print(f"[main] Using {rxcfg['numbufs']} bufs")
 
+    try:
+        rxcfg["rate"] = int(environ["RATE"])
+        sdr.setSampleRate(SOAPY_SDR_RX, 0, rxcfg["rate"])
+    except KeyError:
+        rxcfg["rate"] = sdr.getSampleRate(SOAPY_SDR_RX, 0)
+    print(f"[main] Sampling at {rxcfg['rate']} MHz")
 
-    rxq = []
-    tx_init = []
-    rx_init = Event()
+    try:
+        rxcfg["ppm"] = int(environ["PPM"])
+        sdr.setFrequencyCorrection(SOAPY_SDR_RX, 0, rxcfg["ppm"])
+        print(f"[main] Using {rxcfg['ppm']} ppm offset")
+    except KeyError:
+        pass
+
+    try:
+        rxcfg["freq"] = int(environ["FREQ"])
+        sdr.setFrequency(SOAPY_SDR_RX, 0, rxcfg["freq"])
+    except KeyError:
+        rxcfg["freq"] = sdr.getFrequency(SOAPY_SDR_RX, 0)
+    print(f"[main] Tuning to {rxcfg['freq']} MHz")
+
+    try:
+        rxcfg["bw"] = int(environ["BANDWIDTH"])
+        sdr.setBandwidth(SOAPY_SDR_RX, 0, rxcfg["bw"])
+        print(f"[main] Setting {rxcfg['bw']} MHz bandwidth")
+    except KeyError:
+        pass
+
+    try:
+        sdr.setGainMode(SOAPY_SDR_RX, 0, False)
+        try:
+            gain = float(environ["GAIN"])
+            print(f"[rx] Setting gain to: {gain}")
+            sdr.setGain(SOAPY_SDR_RX, 0, gain)
+        except ValueError:
+            gains = dict(kv.split("=") for kv in environ["GAIN"].split(","))
+            for g in gains:
+                if(g.lower() == "agc"):
+                    print("[rx] Enabling AGC")
+                    sdr.setGainMode(SOAPY_SDR_RX, 0, True)
+                    if(gains[g].lower() != "true"):
+                        print("[rx] Setting AGC setpoint to: %f" % float(gains[g]))
+                        sdr.writeSetting("agc_setpoint", float(gains[g]))
+                else:
+                    print("[rx] Setting gain %s to: %f" % (g, float(gains[g])))
+                    sdr.setGain(SOAPY_SDR_RX, 0, g, float(gains[g]))
+    except KeyError:
+        pass
+    
+    rxcfg["mtu"] = sdr.getStreamMTU(rxStream)
+    print(f"[rx] Using stream MTU: {rxcfg['mtu']}")
 
     # start a thread to receive samples from the SDR
-    rxt = Thread(target=thread_wrapper, args=(rx_thread, rx_init))
+    inbufs = np.zeros((rxcfg["numbufs"], rxcfg["mtu"]), np.complex64)
+    rxq = []
+    tx_init = []
+
+    rxt = Thread(target=thread_wrapper, args=(rx_thread, sdr, rxStream, rxcfg, tx_init, inbufs, rxq))
     rxt.start()
-    rx_init.wait()
 
     # semicolon separated list of comma separated channel settings
     # 0: center frequency
     # 1: decimation factor
     # 2: output port
     chans = list(tuple(map(int, c.split(","))) for c in environ["CHANS"].split(";"))
-
     # start new TX threads for each output channel
     for i, (fc, deci) in enumerate(chans):
-        rxq.append(Queue(numbufs))
+        cfg = {"idx": i, "fc": fc, "deci": deci, **txcfg}
+        rxq.append(Queue(rxcfg["numbufs"]))
         tx_init.append(Event())
-        Thread(target=thread_wrapper, args=(tx_thread, i, fc, deci, baseport+i)).start()
+        Thread(target=thread_wrapper, args=(tx_thread, rxcfg, cfg, tx_init, inbufs, rxq)).start()
 
     rxt.join()
 
