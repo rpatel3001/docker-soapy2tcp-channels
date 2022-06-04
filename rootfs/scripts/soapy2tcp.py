@@ -11,8 +11,8 @@ import traceback
 from scipy.signal import cheby2, sosfilt, sosfilt_zi
 
 
-def rx_thread():
-    global freq, rate, inbufs, mtu, rxq, rx_init, tx_init
+def rx_thread(rx_init):
+    global freq, rate, inbufs, mtu, rxq, numbufs
 
     # parse params to open and initialize SoapySDR device
     args = dict(kv.split("=") for kv in environ["SOAPY"].split(","))
@@ -24,8 +24,8 @@ def rx_thread():
         print(f"[rx] Setting sample rate to: {rate/1e6} MHz")
         sdr.setSampleRate(SOAPY_SDR_RX, 0, rate)
     except KeyError:
-        print("[rx] Missing RATE env var!")
         rate = sdr.getSampleRate(SOAPY_SDR_RX, 0)
+        print(f"[rx] Missing RATE env var, using driver default {rate/1e6} MHz")
 
     try:
         ppm = int(environ["PPM"])
@@ -39,7 +39,8 @@ def rx_thread():
         print(f"[rx] Setting center frequency to: {freq/1e6} MHz")
         sdr.setFrequency(SOAPY_SDR_RX, 0, freq)
     except KeyError:
-        print("[rx] Missing FREQ env var!")
+        freq = sdr.getFrequency(SOAPY_SDR_RX, 0)
+        print(f"[rx] Missing FREQ env var, using driver default {freq/1e6} MHz")
 
     try:
         bw = int(environ["BANDWIDTH"])
@@ -75,16 +76,12 @@ def rx_thread():
     mtu = sdr.getStreamMTU(rxStream)
     print(f"[rx] Using stream MTU: {mtu}")
 
-    numbufs = 10
-    print(f"[rx] Using {numbufs} receive buffers")
-
     sdr.activateStream(rxStream)
     atexit.register(sdr.deactivateStream, rxStream)
 
     inbufs = np.zeros((numbufs, mtu), np.complex64)
     bufidx = 0
-    rxq = Queue(numbufs)
-    last = time()
+    last_cleared = time()
 
     rx_init.set()
 
@@ -97,44 +94,47 @@ def rx_thread():
         if samps < 0:
             print(f"[rx] failed to read stream: {status}")
             continue
-        try:
-            if tx_init.is_set():
-                rxq.put_nowait((bufidx, samps))
-                bufidx = (bufidx+1) % numbufs
-        except Full:
-            print("[rx] %d element receive queue full, after %f seconds" %
-                  (numbufs, (time() - last)))
-            last = time()
-            with rxq.mutex:
-                rxq.queue.clear()
+        for i in range(len(rxq)):
+            try:
+                if tx_init[i].is_set():
+                    rxq[i].put_nowait((bufidx, samps))
+                    bufidx = (bufidx+1) % numbufs
+            except Full:
+                print("[rx] TX %d receive buffers full after %f seconds, clearing queue" %
+                    (i, (time() - last_cleared)))
+                last_cleared = time()
+                with rxq[i].mutex:
+                    rxq[i].queue.clear()
 
 
-def tx_thread(fmix, deci, port):
-    global freq, rate, inbufs, mtu, rxq, tx_init
+def tx_thread(idx, fc, deci, port):
+    global inbufs, rxq
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        print(f"[tx] Listening on port {port}")
+        print(f"[tx {idx}] Listening on port {port}")
         sock.bind(("0.0.0.0", port))
         sock.listen()
         conn, addr = sock.accept()
-        tx_init.set()
+        tx_init[idx].set()
 
         with conn:
-            print(f"[tx] Connection accepted from {addr}")
+            print(f"[tx {idx}] Connection accepted from {addr}")
             conn.sendall(b"RTL0\x00\x00\x00\x00\x00\x00\x00\x00")
 
             outbuf = np.zeros(mtu * 2 // deci, np.uint8)
             sos = cheby2(4, 20, 0.9 / deci, output="sos")
             zi = sosfilt_zi(sos)
 
+            fmix = fc - freq
             mixper = int(np.lcm(fmix, rate) / fmix)
             mixlen = np.ceil(mtu / mixper) * mixper * 2
             mixtime = np.arange(0, mixlen) / rate
             mix = np.exp(-1j * 2*np.pi * fmix * mixtime)
             offset = 0
+            print(f"[tx {idx}] Shifting by {fmix/1e6} MHz ({freq/1e6} to {fc/1e6}) and decimating {rate/1e6} by {deci} to {rate/deci/1e6} on port {port}")
 
             while True:
-                bufidx, insamps = rxq.get()
+                bufidx, insamps = rxq[idx].get()
                 outsamps = insamps * 2 // deci
                 sigbuf = inbufs[bufidx, :insamps]
                 if deci == 1:
@@ -150,31 +150,45 @@ def tx_thread(fmix, deci, port):
                 try:
                     conn.sendall(outbuf[:outsamps])
                 except BaseException:
-                    print(f"[tx] Disconnected from {addr}")
+                    print(f"[tx {idx}] Disconnected from {addr}")
                     return
 
 
-def thread_wrapper(label, func, *args):
+def thread_wrapper(func, *args):
     while True:
         try:
-            print(f"[{label}] starting thread")
+            print(f"[{func.__name__}] starting thread")
             func(*args)
         except BaseException:
             print(traceback.format_exc())
-            print(f"[{label}] exception; restarting thread")
+            print(f"[{func.__name__}] exception; restarting thread")
         else:
-            print(f"[{label}] thread function returned; restarting thread")
+            print(f"[{func.__name__}] thread function returned; restarting thread")
         sleep(1)
 
 
 def main():
-    global rx_init, rxq, freq, tx_init
+    global rxq, tx_init, numbufs
 
+    try:
+        baseport = int(environ["BASEPORT"])
+    except KeyError:
+        baseport = 1234
+    print(f"[main] Starting port numbers at {baseport}")
+
+    try:
+        numbufs = int(environ["NUMBUFS"])
+    except KeyError:
+        numbufs = 10
+    print(f"[rx] Using {numbufs} receive buffers")
+
+
+    rxq = []
+    tx_init = []
     rx_init = Event()
-    tx_init = Event()
 
     # start a thread to receive samples from the SDR
-    rxt = Thread(target=thread_wrapper, args=("rx", rx_thread))
+    rxt = Thread(target=thread_wrapper, args=(rx_thread, rx_init))
     rxt.start()
     rx_init.wait()
 
@@ -185,11 +199,10 @@ def main():
     chans = list(tuple(map(int, c.split(","))) for c in environ["CHANS"].split(";"))
 
     # start new TX threads for each output channel
-    for i, (fc, deci, port) in enumerate(chans):
-        fmix = fc - freq
-        print(
-            f"[main] Shifting by {fmix/1e6} MHz ({freq/1e6} to {fc/1e6}) and decimating {rate/1e6} by {deci} to {rate/deci/1e6} on port {port}")
-        Thread(target=thread_wrapper, args=("tx", tx_thread, fmix, deci, port)).start()
+    for i, (fc, deci) in enumerate(chans):
+        rxq.append(Queue(numbufs))
+        tx_init.append(Event())
+        Thread(target=thread_wrapper, args=(tx_thread, i, fc, deci, baseport+i)).start()
 
     rxt.join()
 
