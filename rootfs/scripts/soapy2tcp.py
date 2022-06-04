@@ -27,17 +27,18 @@ def rx_thread(sdr, rxStream, rxcfg, tx_init, inbufs, rxq):
         if samps < 0:
             print(f"[rx] failed to read stream: {status}")
             continue
+
         for i in range(len(rxq)):
             try:
                 if tx_init[i].is_set():
                     rxq[i].put_nowait((bufidx, samps))
-                    bufidx = (bufidx+1) % rxcfg["numbufs"]
             except Full:
                 print("[rx] TX %d receive buffers full after %f seconds, clearing queue" %
                     (i, (time() - last_cleared)))
                 last_cleared = time()
                 with rxq[i].mutex:
                     rxq[i].queue.clear()
+        bufidx = (bufidx+1) % rxcfg["numbufs"]
 
 
 def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
