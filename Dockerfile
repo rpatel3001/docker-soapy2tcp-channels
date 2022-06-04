@@ -2,6 +2,8 @@ FROM ghcr.io/sdr-enthusiasts/docker-baseimage:soapyrtlsdr
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+COPY sdrplay/ /src/sdrplay/
+
 # hadolint ignore=DL3008,SC2086,DL4006,SC2039
 RUN set -x && \
     TEMP_PACKAGES=() && \
@@ -20,12 +22,7 @@ RUN set -x && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
         "${KEPT_PACKAGES[@]}" \
-        "${TEMP_PACKAGES[@]}"
-
-COPY sdrplay/ /src/sdrplay/
-
-# hadolint ignore=DL3008,SC2086,DL4006,SC2039
-RUN set -x && \
+        "${TEMP_PACKAGES[@]}" && \
     # install SDRPlay driver
     pushd /src/sdrplay && \
     chmod +x install.sh && \
