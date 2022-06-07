@@ -55,15 +55,17 @@ def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
             conn.sendall(b"RTL0\x00\x00\x00\x00\x00\x00\x00\x00")
 
             outbuf = np.zeros(rxcfg["mtu"] * 2 // txcfg['deci'], np.uint8)
-            sos = cheby2(4, 20, 0.9 / txcfg['deci'], output="sos")
-            zi = sosfilt_zi(sos)
 
             if txcfg['deci'] != 1:
                 fmix = txcfg["fc"] - rxcfg["freq"]
+                sos = cheby2(4, 20, 0.9 / txcfg['deci'], output="sos")
+                zi = sosfilt_zi(sos)
                 mixper = int(np.lcm(fmix, rxcfg["rate"]) / fmix)
                 mixlen = np.ceil(rxcfg["mtu"] / mixper) * mixper * 2
                 mixtime = np.arange(0, mixlen) / rxcfg["rate"]
                 mix = np.exp(-1j * 2*np.pi * fmix * mixtime)
+                aabuf = np.zeros(rxcfg["mtu"], np.complex64)
+                decbuf = np.zeros(rxcfg["mtu"] // txcfg['deci'], np.complex64)
                 offset = 0
 
             while True:
@@ -71,15 +73,14 @@ def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
                 outsamps = insamps * 2 // txcfg['deci']
                 sigbuf = inbufs[bufidx, :insamps]
                 if txcfg['deci'] == 1:
-                    outbuf[0:outsamps:2] = np.real(sigbuf) * 127.5 + 127.5
-                    outbuf[1:outsamps:2] = np.imag(sigbuf) * 127.5 + 127.5
+                    outbuf[:outsamps] = sigbuf.view(np.float32)[:outsamps] * 127.5 + 127.5
                 else:
-                    aabuf, zi = sosfilt(sos, sigbuf * mix[offset:offset+insamps], zi=zi)
+                    aabuf[:insamps], zi = sosfilt(sos, sigbuf[:insamps] * mix[offset:offset+insamps], zi=zi)
                     offset = (offset + insamps) % mixper
-                    decbuf = aabuf[::txcfg['deci']]
 
-                    outbuf[0:outsamps:2] = np.real(decbuf) * 127.5 + 127.5
-                    outbuf[1:outsamps:2] = np.imag(decbuf) * 127.5 + 127.5
+                    decbuf[:outsamps//2] = aabuf[:insamps:txcfg['deci']]
+
+                    outbuf[:outsamps] = decbuf.view(np.float32)[:outsamps] * 127.5 + 127.5
                 try:
                     conn.sendall(outbuf[:outsamps])
                 except BaseException:
