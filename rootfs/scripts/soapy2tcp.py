@@ -61,7 +61,7 @@ def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
                 sos = cheby2(4, 20, 0.9 / txcfg['deci'], output="sos")
                 zi = sosfilt_zi(sos)
                 mixper = int(np.lcm(fmix, rxcfg["rate"]) / fmix)
-                mixlen = np.ceil(rxcfg["mtu"] / mixper) * mixper * 2
+                mixlen = int(np.ceil(rxcfg["mtu"] / mixper)) * mixper * 2
                 mixtime = np.arange(0, mixlen) / rxcfg["rate"]
                 mix = np.exp(-1j * 2*np.pi * fmix * mixtime)
                 aabuf = np.zeros(rxcfg["mtu"], np.complex64)
@@ -177,13 +177,9 @@ def main():
     rxcfg["mtu"] = sdr.getStreamMTU(rxStream)
     print(f"[rx] Using stream MTU: {rxcfg['mtu']}")
 
-    # start a thread to receive samples from the SDR
     inbufs = np.zeros((rxcfg["numbufs"], rxcfg["mtu"]), np.complex64)
     rxq = []
     tx_init = []
-
-    rxt = Thread(target=thread_wrapper, args=(rx_thread, sdr, rxStream, rxcfg, tx_init, inbufs, rxq))
-    rxt.start()
 
     # semicolon separated list of comma separated channel settings
     # 0: center frequency
@@ -196,6 +192,10 @@ def main():
         rxq.append(Queue(rxcfg["numbufs"]))
         tx_init.append(Event())
         Thread(target=thread_wrapper, args=(tx_thread, rxcfg, cfg, tx_init, inbufs, rxq)).start()
+
+    # start a thread to receive samples from the SDR
+    rxt = Thread(target=thread_wrapper, args=(rx_thread, sdr, rxStream, rxcfg, tx_init, inbufs, rxq))
+    rxt.start()
 
     rxt.join()
 
