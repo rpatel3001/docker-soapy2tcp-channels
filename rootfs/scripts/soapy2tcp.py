@@ -13,7 +13,7 @@ from scipy.signal import cheby2, sosfilt, sosfilt_zi
 
 def rx_thread(sdr, rxStream, rxcfg, tx_init, inbufs, rxq):
     bufidx = 0
-    last_cleared = time()
+    last_cleared = [time()] * len(rxq)
 
     sdr.activateStream(rxStream)
     atexit.register(sdr.deactivateStream, rxStream)
@@ -34,8 +34,8 @@ def rx_thread(sdr, rxStream, rxcfg, tx_init, inbufs, rxq):
                     rxq[i].put_nowait((bufidx, samps))
             except Full:
                 print("[rx] TX %d receive buffers full after %f seconds, clearing queue" %
-                    (i, (time() - last_cleared)))
-                last_cleared = time()
+                    (i, (time() - last_cleared[i])))
+                last_cleared[i] = time()
                 with rxq[i].mutex:
                     rxq[i].queue.clear()
         bufidx = (bufidx+1) % rxcfg["numbufs"]
