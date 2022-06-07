@@ -58,12 +58,13 @@ def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
             sos = cheby2(4, 20, 0.9 / txcfg['deci'], output="sos")
             zi = sosfilt_zi(sos)
 
-            fmix = txcfg["fc"] - rxcfg["freq"]
-            mixper = int(np.lcm(fmix, rxcfg["rate"]) / fmix)
-            mixlen = np.ceil(rxcfg["mtu"] / mixper) * mixper * 2
-            mixtime = np.arange(0, mixlen) / rxcfg["rate"]
-            mix = np.exp(-1j * 2*np.pi * fmix * mixtime)
-            offset = 0
+            if txcfg['deci'] != 1:
+                fmix = txcfg["fc"] - rxcfg["freq"]
+                mixper = int(np.lcm(fmix, rxcfg["rate"]) / fmix)
+                mixlen = np.ceil(rxcfg["mtu"] / mixper) * mixper * 2
+                mixtime = np.arange(0, mixlen) / rxcfg["rate"]
+                mix = np.exp(-1j * 2*np.pi * fmix * mixtime)
+                offset = 0
 
             while True:
                 bufidx, insamps = rxq[txcfg['idx']].get()
@@ -171,7 +172,7 @@ def main():
                     sdr.setGain(SOAPY_SDR_RX, 0, g, float(gains[g]))
     except KeyError:
         pass
-    
+
     rxcfg["mtu"] = sdr.getStreamMTU(rxStream)
     print(f"[rx] Using stream MTU: {rxcfg['mtu']}")
 
