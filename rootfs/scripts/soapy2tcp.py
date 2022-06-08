@@ -64,9 +64,11 @@ def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
                 mixlen = int(np.ceil(rxcfg["mtu"] / mixper)) * mixper * 2
                 mixtime = np.arange(0, mixlen) / rxcfg["rate"]
                 mix = np.exp(-1j * 2*np.pi * fmix * mixtime)
+                mixed = np.zeros(rxcfg["mtu"], np.complex64)
                 aabuf = np.zeros(rxcfg["mtu"], np.complex64)
                 decbuf = np.zeros(rxcfg["mtu"] // txcfg['deci'], np.complex64)
                 offset = 0
+
 
             while True:
                 bufidx, insamps = rxq[txcfg['idx']].get()
@@ -75,7 +77,8 @@ def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
                 if txcfg['deci'] == 1:
                     outbuf[:outsamps] = sigbuf.view(np.float32)[:outsamps] * 127.5 + 127.5
                 else:
-                    aabuf[:insamps], zi = sosfilt(sos, sigbuf[:insamps] * mix[offset:offset+insamps], zi=zi)
+                    mixed[:insamps] = sigbuf[:insamps] * mix[offset:offset+insamps]
+                    aabuf[:insamps], zi = sosfilt(sos, mixed[:insamps], zi=zi)
                     offset = (offset + insamps) % mixper
 
                     decbuf[:outsamps//2] = aabuf[:insamps:txcfg['deci']]
