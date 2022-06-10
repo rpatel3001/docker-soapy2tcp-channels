@@ -8,7 +8,8 @@ from threading import Thread, Event
 from queue import Queue, Full
 from time import time, sleep
 import traceback
-from scipy.signal import cheby2, sosfilt, sosfilt_zi
+from scipy.signal import cheby2, sosfilt_zi
+from scipy.signal._sosfilt import _sosfilt
 
 
 def rx_thread(sdr, rxStream, rxcfg, tx_init, inbufs, rxq):
@@ -33,7 +34,7 @@ def rx_thread(sdr, rxStream, rxcfg, tx_init, inbufs, rxq):
                 if tx_init[i].is_set():
                     rxq[i].put_nowait((bufidx, samps))
             except Full:
-                print("[rx] TX %d receive buffers full after %f seconds, clearing queue" %
+                print("[rx] TX %d: receive buffers full after %f seconds, clearing queue" %
                     (i, (time() - last_cleared[i])))
                 last_cleared[i] = time()
                 with rxq[i].mutex:
@@ -59,16 +60,17 @@ def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
             if txcfg['deci'] != 1:
                 fmix = txcfg["fc"] - rxcfg["freq"]
                 sos = cheby2(4, 20, 0.9 / txcfg['deci'], output="sos")
-                zi = sosfilt_zi(sos)
+                zf = sosfilt_zi(sos)
                 mixper = int(np.lcm(fmix, rxcfg["rate"]) / fmix)
                 mixlen = int(np.ceil(rxcfg["mtu"] / mixper)) * mixper * 2
                 mixtime = np.arange(0, mixlen) / rxcfg["rate"]
                 mix = np.exp(-1j * 2*np.pi * fmix * mixtime)
-                mixed = np.zeros(rxcfg["mtu"], np.complex64)
+                mixbuf = np.zeros(rxcfg["mtu"], np.complex64)
                 aabuf = np.zeros(rxcfg["mtu"], np.complex64)
                 decbuf = np.zeros(rxcfg["mtu"] // txcfg['deci'], np.complex64)
                 offset = 0
-
+                fdtype = np.result_type(sos, mixbuf, zf)
+                sos = sos.astype(fdtype)
 
             while True:
                 bufidx, insamps = rxq[txcfg['idx']].get()
@@ -77,8 +79,16 @@ def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
                 if txcfg['deci'] == 1:
                     outbuf[:outsamps] = sigbuf.view(np.float32)[:outsamps] * 127.5 + 127.5
                 else:
-                    mixed[:insamps] = sigbuf[:insamps] * mix[offset:offset+insamps]
-                    aabuf[:insamps], zi = sosfilt(sos, mixed[:insamps], zi=zi)
+                    mixbuf[:insamps] = sigbuf[:insamps] * mix[offset:offset+insamps]
+
+                    x = np.array(mixbuf[:insamps], fdtype, order='C', ndmin=2)  # make a copy, can modify in place
+                    zi = np.array(zf, fdtype, order='C', ndmin=3)  # make a copy so that we can operate in place
+                    _sosfilt(sos, x, zi)
+                    x.shape = mixbuf[:insamps].shape
+                    zi.shape = zf.shape
+                    aabuf[:insamps] = x
+                    zf = zi
+
                     offset = (offset + insamps) % mixper
 
                     decbuf[:outsamps//2] = aabuf[:insamps:txcfg['deci']]
