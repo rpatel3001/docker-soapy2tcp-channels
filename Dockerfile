@@ -14,6 +14,7 @@ RUN set -x && \
     KEPT_PACKAGES+=(nano) && \
     # packages needed for DSP
     KEPT_PACKAGES+=(python3-scipy) && \
+    KEPT_PACKAGES+=(python3-numba) && \
     # packages needed to build
     TEMP_PACKAGES+=(build-essential) && \
     TEMP_PACKAGES+=(cmake) && \
@@ -27,12 +28,13 @@ RUN set -x && \
     pushd /src/sdrplay && \
     chmod +x install.sh && \
     ./install.sh && \
-    popd && \
+#    popd
+#RUN set -x && \
     # install SoapySDRPlay
     git clone https://github.com/pothosware/SoapySDRPlay3.git /src/sdrplay/SoapySDRPlay3 && \
     pushd /src/sdrplay/SoapySDRPlay3 && \
     sed -i 's#// OVERLOAD DETECTED#SoapySDR_log(SOAPY_SDR_WARNING, "ADC OVERLOAD DETECTED");#' Streaming.cpp && \
-    sed -i 's#// OVERLOAD CORRECTED#SoapySDR_log(SOAPY_SDR_WARNING, "ADC OVERLOAD CORRECTED");#' Streaming.cpp && \
+#    sed -i 's#// OVERLOAD CORRECTED#SoapySDR_log(SOAPY_SDR_WARNING, "ADC OVERLOAD CORRECTED");#' Streaming.cpp && \
     mkdir build && \
     pushd build && \
     cmake .. && \
@@ -45,3 +47,9 @@ RUN set -x && \
     rm -rf /src/* /tmp/* /var/lib/apt/lists/*
 
 COPY rootfs/ /
+
+#RUN set -x && \
+#    pip install line_profiler && \
+#    touch /etc/services.d/soapy/down && \
+#    sed -i "s#def tx_thread#@profile\ndef tx_thread#" /scripts/soapy2tcp.py && \
+#    sed -i "s#python -u#kernprof -l#" /etc/services.d/soapy/run

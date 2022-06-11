@@ -3,13 +3,12 @@ import socket
 import atexit
 from SoapySDR import Device, SOAPY_SDR_RX, SOAPY_SDR_CF32, SoapySDR_errToStr
 import numpy as np
-from numpy.lib.recfunctions import repack_fields
 from numba import njit
 from threading import Thread, Event
 from queue import Queue, Full
 from time import time, sleep
 import traceback
-from scipy.signal import cheby2, sosfilt_zi
+from scipy.signal import iirdesign, sosfilt_zi
 from scipy.signal._sosfilt import _sosfilt
 
 
@@ -64,9 +63,9 @@ def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
         print(f"[tx {txcfg['idx']}] Shifting by {(txcfg['fc'] - rxcfg['freq'])/1e6} MHz ({rxcfg['freq']/1e6} to {txcfg['fc']/1e6}) and decimating {rxcfg['rate']/1e6} by {txcfg['deci']} to {rxcfg['rate']/txcfg['deci']/1e6}")
 
         outbuf = np.zeros(rxcfg["mtu"] * 2 // txcfg['deci'], np.uint8)
+        fdtype = np.complex64
 
         if txcfg['deci'] != 1:
-            fdtype = np.complex64
             # setup mixer LO
             fmix = txcfg["fc"] - rxcfg["freq"] # amount to shift by
             mixper = int(np.lcm(fmix, rxcfg["rate"]) / fmix) # period of the mixer frequency sampled at the sample rate
@@ -75,7 +74,11 @@ def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
             mix = np.exp(-1j * 2*np.pi * fmix * mixtime).astype(fdtype) * 255.0 # LO buffer, scaled to int8
             offset = 0 # keep track of where in the LO buffer we are
             # setup filter
-            sos = cheby2(4, 20, 0.9 / txcfg['deci'], output="sos").astype(fdtype) # get filter coefficients
+            wp = 0.8 / txcfg['deci'] # passband stop (% Nyquist)
+            ws = 1.0 / txcfg['deci'] # stopband start (% Nyquist)
+            rp = 2.5 # passband ripple (dB)
+            rs = 35 # stopband attenuation (dB)
+            sos = iirdesign(wp, ws, rp, rs, output="sos").astype(fdtype) # get filter coefficients
             zi = sosfilt_zi(sos).astype(fdtype) # calculate initial conditions
             zi.shape = (1, *zi.shape) # add an empty dimension for _sosfilt
             # buffer for decimation
