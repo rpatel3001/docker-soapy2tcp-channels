@@ -15,6 +15,7 @@ RUN set -x && \
     # packages needed for DSP
     KEPT_PACKAGES+=(python3-scipy) && \
     KEPT_PACKAGES+=(python3-numba) && \
+    KEPT_PACKAGES+=(python3-prctl) && \
     # packages needed to build
     TEMP_PACKAGES+=(build-essential) && \
     TEMP_PACKAGES+=(cmake) && \

@@ -1,18 +1,19 @@
-from os import environ
-import socket
 import atexit
-from SoapySDR import Device, SOAPY_SDR_RX, SOAPY_SDR_CF32, SoapySDR_errToStr
 import numpy as np
-from numba import njit
-from threading import Thread, Event
-from queue import Queue, Full
-from time import time, sleep
+import socket
 import traceback
+import prctl
+from os import environ
+from numba import njit
 from scipy.signal import iirdesign, sosfilt_zi
-from scipy.signal._sosfilt import _sosfilt
-
+from SoapySDR import Device, SoapySDR_errToStr, SOAPY_SDR_RX, SOAPY_SDR_CF32
+from threading import Thread, Event
+from time import time, sleep
+from queue import Queue, Full
 
 def rx_thread(sdr, rxStream, rxcfg, tx_init, inbufs, rxq):
+    prctl.set_name("rx")
+
     bufidx = 0
     last_cleared = [time()] * len(rxq)
 
@@ -57,8 +58,20 @@ def fastscale(inbuf):
     return (inbuf * 127.5 - 127.5).astype(np.uint8)
 
 
+@njit("(complex64[:, ::1], complex64[::1], complex64[:, ::1])", nogil=True, fastmath=True)
+def fastfilt(sos, x, zi):
+    for n in range(x.shape[0]):
+        for s in range(sos.shape[0]):
+            x_n = x[n]
+            x[n] = sos[s, 0] * x_n + zi[s, 0]
+            zi[s, 0] = (sos[s, 1] * x_n - sos[s, 4] * x[n] +
+                            zi[s, 1])
+            zi[s, 1] = (sos[s, 2] * x_n - sos[s, 5] * x[n])
+
+
 def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        prctl.set_name(f"tx {txcfg['idx']}")
         print(f"[tx {txcfg['idx']}] Listening on port {txcfg['baseport'] + txcfg['idx']}")
         print(f"[tx {txcfg['idx']}] Shifting by {(txcfg['fc'] - rxcfg['freq'])/1e6} MHz ({rxcfg['freq']/1e6} to {txcfg['fc']/1e6}) and decimating {rxcfg['rate']/1e6} by {txcfg['deci']} to {rxcfg['rate']/txcfg['deci']/1e6}")
 
@@ -80,7 +93,6 @@ def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
             rs = 35 # stopband attenuation (dB)
             sos = iirdesign(wp, ws, rp, rs, output="sos").astype(fdtype) # get filter coefficients
             zi = sosfilt_zi(sos).astype(fdtype) # calculate initial conditions
-            zi.shape = (1, *zi.shape) # add an empty dimension for _sosfilt
             # buffer for decimation
             decbuf = np.zeros(rxcfg["mtu"] // txcfg['deci'], fdtype)
 
@@ -98,16 +110,16 @@ def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
                 bufidx, insamps = rxq[txcfg['idx']].get() # receive a buffer index and length
                 decsamps = insamps // txcfg['deci']
                 outsamps = decsamps * 2
-                # copy out the received samples, adding an empty dimension for _sosfilt
-                sigbuf = np.array(inbufs[bufidx][:insamps], fdtype, order='C', ndmin=2)
+                # copy out the received samples
+                sigbuf = np.array(inbufs[bufidx][:insamps], fdtype, order='C')
                 if txcfg['deci'] == 1:
                     # if no decimation, just scale and shift, don't mix/filter
-                    outbuf[:outsamps] = fastscale(sigbuf[0].view(np.float32))
+                    outbuf[:outsamps] = fastscale(sigbuf.view(np.float32))
                 else:
-                    fastmult(sigbuf[0], mix[offset:offset+insamps]) # mix with LO
+                    fastmult(sigbuf, mix[offset:offset+insamps]) # mix with LO
                     offset = (offset + insamps) % mixper
-                    _sosfilt(sos, sigbuf, zi) # filter
-                    decbuf[:decsamps] = sigbuf[0][:insamps:txcfg['deci']] # decimate
+                    fastfilt(sos, sigbuf, zi) # filter
+                    decbuf[:decsamps] = sigbuf[:insamps:txcfg['deci']] # decimate
                     outbuf[:outsamps] = fastshift(decbuf[:decsamps].view(np.float32)) # shift to uint8 range
                 try:
                     conn.sendall(outbuf[:outsamps])
@@ -131,6 +143,7 @@ def thread_wrapper(func, *args):
 
 
 def main():
+    prctl.set_name("main")
     rxcfg = {}
     txcfg = {}
 
@@ -150,7 +163,7 @@ def main():
     try:
         rxcfg["numbufs"] = int(environ["NUMBUFS"])
     except KeyError:
-        rxcfg["numbufs"]  = 10
+        rxcfg["numbufs"]  = 100
     print(f"[main] Using {rxcfg['numbufs']} bufs")
 
     try:
@@ -218,10 +231,10 @@ def main():
         cfg = {"idx": i, "fc": fc, "deci": deci, **txcfg}
         rxq.append(Queue(rxcfg["numbufs"]))
         tx_init.append(Event())
-        Thread(target=thread_wrapper, args=(tx_thread, rxcfg, cfg, tx_init, inbufs, rxq)).start()
+        Thread(name=f"tx {i}", target=thread_wrapper, args=(tx_thread, rxcfg, cfg, tx_init, inbufs, rxq)).start()
 
     # start a thread to receive samples from the SDR
-    rxt = Thread(target=thread_wrapper, args=(rx_thread, sdr, rxStream, rxcfg, tx_init, inbufs, rxq))
+    rxt = Thread(name="rx", target=thread_wrapper, args=(rx_thread, sdr, rxStream, rxcfg, tx_init, inbufs, rxq))
     rxt.start()
 
     rxt.join()
