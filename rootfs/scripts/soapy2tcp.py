@@ -1,9 +1,10 @@
 from os import environ
 import socket
 import atexit
-import SoapySDR
-from SoapySDR import *
+from SoapySDR import Device, SOAPY_SDR_RX, SOAPY_SDR_CF32, SoapySDR_errToStr
 import numpy as np
+from numpy.lib.recfunctions import repack_fields
+from numba import njit
 from threading import Thread, Event
 from queue import Queue, Full
 from time import time, sleep
@@ -20,13 +21,13 @@ def rx_thread(sdr, rxStream, rxcfg, tx_init, inbufs, rxq):
     atexit.register(sdr.deactivateStream, rxStream)
 
     status = sdr.readStream(rxStream, [inbufs[bufidx]], rxcfg["mtu"])
-    print(f"[rx] Actual stream transfer size: {status.ret}")
+    print(f"[rx] Actual stream transfer size: {status.ret}/{rxcfg['mtu']}")
 
     while True:
         status = sdr.readStream(rxStream, [inbufs[bufidx]], rxcfg["mtu"])
         samps = status.ret
         if samps < 0:
-            print(f"[rx] failed to read stream: {status}")
+            print(f"[rx] failed to read stream: {status} = {SoapySDR_errToStr(status)}")
             continue
 
         for i in range(len(rxq)):
@@ -42,10 +43,45 @@ def rx_thread(sdr, rxStream, rxcfg, tx_init, inbufs, rxq):
         bufidx = (bufidx+1) % rxcfg["numbufs"]
 
 
+@njit("(complex64[::1], complex64[::1])", nogil=True, fastmath=True)
+def fastmult(x, y):
+    x *= y
+
+
+@njit("uint8[::1](float32[::1])", nogil=True, fastmath=True)
+def fastshift(inbuf):
+    return (inbuf - 127.5).astype(np.uint8)
+
+
+@njit("uint8[::1](float32[::1])", nogil=True, fastmath=True)
+def fastscale(inbuf):
+    return (inbuf * 127.5 - 127.5).astype(np.uint8)
+
+
 def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         print(f"[tx {txcfg['idx']}] Listening on port {txcfg['baseport'] + txcfg['idx']}")
         print(f"[tx {txcfg['idx']}] Shifting by {(txcfg['fc'] - rxcfg['freq'])/1e6} MHz ({rxcfg['freq']/1e6} to {txcfg['fc']/1e6}) and decimating {rxcfg['rate']/1e6} by {txcfg['deci']} to {rxcfg['rate']/txcfg['deci']/1e6}")
+
+        outbuf = np.zeros(rxcfg["mtu"] * 2 // txcfg['deci'], np.uint8)
+
+        if txcfg['deci'] != 1:
+            fdtype = np.complex64
+            # setup mixer LO
+            fmix = txcfg["fc"] - rxcfg["freq"] # amount to shift by
+            mixper = int(np.lcm(fmix, rxcfg["rate"]) / fmix) # period of the mixer frequency sampled at the sample rate
+            mixlen = int(np.ceil(rxcfg["mtu"] / mixper)) * mixper * 2 # the smallest periodic buffer length that fits the max MTU, times 2
+            mixtime = np.arange(0, mixlen) / rxcfg["rate"] # sample times
+            mix = np.exp(-1j * 2*np.pi * fmix * mixtime).astype(fdtype) * 255.0 # LO buffer, scaled to int8
+            offset = 0 # keep track of where in the LO buffer we are
+            # setup filter
+            sos = cheby2(4, 20, 0.9 / txcfg['deci'], output="sos").astype(fdtype) # get filter coefficients
+            zi = sosfilt_zi(sos).astype(fdtype) # calculate initial conditions
+            zi.shape = (1, *zi.shape) # add an empty dimension for _sosfilt
+            # buffer for decimation
+            decbuf = np.zeros(rxcfg["mtu"] // txcfg['deci'], fdtype)
+
+        # wait for a connection, then signal RX thread to push to the queue
         sock.bind(("0.0.0.0", txcfg["baseport"] + txcfg["idx"]))
         sock.listen()
         conn, addr = sock.accept()
@@ -53,47 +89,23 @@ def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
 
         with conn:
             print(f"[tx {txcfg['idx']}] Connection accepted from {addr}")
-            conn.sendall(b"RTL0\x00\x00\x00\x00\x00\x00\x00\x00")
-
-            outbuf = np.zeros(rxcfg["mtu"] * 2 // txcfg['deci'], np.uint8)
-
-            if txcfg['deci'] != 1:
-                fmix = txcfg["fc"] - rxcfg["freq"]
-                sos = cheby2(4, 20, 0.9 / txcfg['deci'], output="sos")
-                zf = sosfilt_zi(sos)
-                mixper = int(np.lcm(fmix, rxcfg["rate"]) / fmix)
-                mixlen = int(np.ceil(rxcfg["mtu"] / mixper)) * mixper * 2
-                mixtime = np.arange(0, mixlen) / rxcfg["rate"]
-                mix = np.exp(-1j * 2*np.pi * fmix * mixtime)
-                mixbuf = np.zeros(rxcfg["mtu"], np.complex64)
-                aabuf = np.zeros(rxcfg["mtu"], np.complex64)
-                decbuf = np.zeros(rxcfg["mtu"] // txcfg['deci'], np.complex64)
-                offset = 0
-                fdtype = np.result_type(sos, mixbuf, zf)
-                sos = sos.astype(fdtype)
+            conn.sendall(b"RTL0\x00\x00\x00\x00\x00\x00\x00\x00") # rtl-tcp header
 
             while True:
-                bufidx, insamps = rxq[txcfg['idx']].get()
-                outsamps = insamps * 2 // txcfg['deci']
-                sigbuf = inbufs[bufidx, :insamps]
+                bufidx, insamps = rxq[txcfg['idx']].get() # receive a buffer index and length
+                decsamps = insamps // txcfg['deci']
+                outsamps = decsamps * 2
+                # copy out the received samples, adding an empty dimension for _sosfilt
+                sigbuf = np.array(inbufs[bufidx][:insamps], fdtype, order='C', ndmin=2)
                 if txcfg['deci'] == 1:
-                    outbuf[:outsamps] = sigbuf.view(np.float32)[:outsamps] * 127.5 + 127.5
+                    # if no decimation, just scale and shift, don't mix/filter
+                    outbuf[:outsamps] = fastscale(sigbuf[0].view(np.float32))
                 else:
-                    mixbuf[:insamps] = sigbuf[:insamps] * mix[offset:offset+insamps]
-
-                    x = np.array(mixbuf[:insamps], fdtype, order='C', ndmin=2)  # make a copy, can modify in place
-                    zi = np.array(zf, fdtype, order='C', ndmin=3)  # make a copy so that we can operate in place
-                    _sosfilt(sos, x, zi)
-                    x.shape = mixbuf[:insamps].shape
-                    zi.shape = zf.shape
-                    aabuf[:insamps] = x
-                    zf = zi
-
+                    fastmult(sigbuf[0], mix[offset:offset+insamps]) # mix with LO
                     offset = (offset + insamps) % mixper
-
-                    decbuf[:outsamps//2] = aabuf[:insamps:txcfg['deci']]
-
-                    outbuf[:outsamps] = decbuf.view(np.float32)[:outsamps] * 127.5 + 127.5
+                    _sosfilt(sos, sigbuf, zi) # filter
+                    decbuf[:decsamps] = sigbuf[0][:insamps:txcfg['deci']] # decimate
+                    outbuf[:outsamps] = fastshift(decbuf[:decsamps].view(np.float32)) # shift to uint8 range
                 try:
                     conn.sendall(outbuf[:outsamps])
                 except BaseException:
@@ -101,6 +113,7 @@ def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
                     tx_init[txcfg['idx']].clear()
 
 
+# wrapper to catch exceptions and restart threads
 def thread_wrapper(func, *args):
     while True:
         try:
@@ -118,11 +131,10 @@ def main():
     rxcfg = {}
     txcfg = {}
 
-    # parse params to open and initialize SoapySDR device
+    # parse params to open and initialize SoapySDR device + stream
     args = dict(kv.split("=") for kv in environ["SOAPY"].split(","))
     print(f"[rx] Opening SoapySDR device with parameters: {args}")
-    sdr = SoapySDR.Device(args)
-
+    sdr = Device(args)
     rxStream = sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
     atexit.register(sdr.closeStream, rxStream)
 
@@ -197,7 +209,6 @@ def main():
     # semicolon separated list of comma separated channel settings
     # 0: center frequency
     # 1: decimation factor
-    # 2: output port
     chans = list(tuple(map(int, c.split(","))) for c in environ["CHANS"].split(";"))
     # start new TX threads for each output channel
     for i, (fc, deci) in enumerate(chans):
