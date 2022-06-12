@@ -87,10 +87,10 @@ def tx_thread(rxcfg, txcfg, tx_init, inbufs, rxq):
             mix = np.exp(-1j * 2*np.pi * fmix * mixtime).astype(fdtype) * 255.0 # LO buffer, scaled to int8
             offset = 0 # keep track of where in the LO buffer we are
             # setup filter
-            wp = 0.8 / txcfg['deci'] # passband stop (% Nyquist)
-            ws = 1.0 / txcfg['deci'] # stopband start (% Nyquist)
-            rp = 2.5 # passband ripple (dB)
-            rs = 35 # stopband attenuation (dB)
+            wp = 0.80 / txcfg['deci'] # passband stop (% Nyquist)
+            ws = 1.20 / txcfg['deci'] # stopband start (% Nyquist)
+            rp = 0.75 # passband ripple (dB)
+            rs = 40 # stopband attenuation (dB)
             sos = iirdesign(wp, ws, rp, rs, output="sos").astype(fdtype) # get filter coefficients
             zi = sosfilt_zi(sos).astype(fdtype) # calculate initial conditions
             # buffer for decimation

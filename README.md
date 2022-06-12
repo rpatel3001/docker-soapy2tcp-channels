@@ -73,7 +73,7 @@ services:
       - SOAPY=driver=sdrplay
       - RATE=8400000
       - FREQ=133500000
-      - GAIN=RFGR=0,IFGR=20
+      - GAIN=agc=-30
       - BASEPORT=1234
       - CHANS=131000000,4;136600000,4;133500000,1
 
