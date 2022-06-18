@@ -26,7 +26,10 @@ def rx_thread(sdr, rxStream, rxcfg, tx_init, inbufs, rxq):
     while True:
         status = sdr.readStream(rxStream, [inbufs[bufidx]], rxcfg["mtu"])
         samps = status.ret
-        if samps < 0:
+        if samps == -1:
+            print(f"[rx] read stream timed out, restarting RX thread")
+            return
+        elif samps < 0:
             print(f"[rx] failed to read stream: {status} = {SoapySDR_errToStr(status)}")
             continue
 
