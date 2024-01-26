@@ -1,4 +1,4 @@
-FROM ghcr.io/sdr-enthusiasts/docker-baseimage:soapyrtlsdr
+FROM ghcr.io/sdr-enthusiasts/docker-baseimage@sha256:bafdf9e89a7371651bed9b78f5c26440bd2839943f5d88ead6d1bf8e19be7103
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
