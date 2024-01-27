@@ -10,8 +10,7 @@ fi
 
 while ! SoapySDRUtil --find=$SOAPY; do
     echo "SoapySDR device not found!"
-    s6-svc -r /run/s6/services/sdrplay
-    sleep 10
+    sleep 86400
 done
 
 python -u /scripts/soapy2tcp.py 2>&1 | stdbuf -o0 awk '{print "[soapy] " strftime("%Y/%m/%d %H:%M:%S", systime()) " " $0}'
