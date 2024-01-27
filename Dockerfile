@@ -20,11 +20,29 @@ RUN set -x && \
     TEMP_PACKAGES+=(build-essential) && \
     TEMP_PACKAGES+=(cmake) && \
     TEMP_PACKAGES+=(pkg-config) && \
+    TEMP_PACKAGES+=(libusb-1.0-0-dev) && \
+    KEPT_PACKAGES+=(libusb-1.0-0) && \
     # install packages
     apt-get update && \
     apt-get install -y --no-install-recommends \
         "${KEPT_PACKAGES[@]}" \
         "${TEMP_PACKAGES[@]}" && \
+    git clone https://github.com/ericek111/libmirisdr-5.git /src/libmirisdr-5 && \
+    pushd /src/libmirisdr-5 && \
+    mkdir build && \
+    pushd build && \
+    cmake .. && \
+    make && \
+    make install && \
+    popd && popd && \
+    git clone https://github.com/ericek111/SoapyMiri.git /src/SoapyMiri && \
+    pushd /src/SoapyMiri && \
+    mkdir build && \
+    pushd build && \
+    cmake .. && \
+    make -j4 && \
+    make install && \
+    popd && popd && \
     # install SDRPlay driver
     pushd /src/sdrplay && \
     chmod +x install.sh && \
