@@ -1,5 +1,5 @@
 # docker-soapy2tcp-channels
-[![GitHub Workflow Status](https://img.shields.io/github/workflow/status/rpatel3001/docker-soapy2tcp-channels/Build%20and%20deploy%20to%20ghcr.io)](https://github.com/rpatel3001/docker-soapy2tcp-channels/actions/workflows/deploy.yml)
+[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/rpatel3001/docker-soapy2tcp-channels/deploy.yml?branch=master)](https://github.com/rpatel3001/docker-soapy2tcp-channels/actions/workflows/deploy.yml)
 [![Discord](https://img.shields.io/discord/734090820684349521)](https://discord.gg/sTf9uYF)
 
 A Docker image which opens a SoapySDR device, mixes and downsamples the stream into channels, and exposes the channels as rtl_tcp compatible streams. Numba is used to JIT compile vector math operations for speed.
