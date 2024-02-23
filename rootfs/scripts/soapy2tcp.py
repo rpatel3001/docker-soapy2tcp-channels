@@ -53,7 +53,10 @@ def rx_thread(sdrcfg, rxStream, rxcfg, tx_init, inbufs, rxq):
             print(f"[rx] failed to read stream, restarting thread: {SoapySDR_errToStr(status.ret)}: {status}")
             sdr.deactivateStream(rxStream)
             sdr.closeStream(rxStream)
-            return
+            if environ.get("EXIT_ON_ERROR"):
+              exit()
+            else:
+              return
 
         for i in range(len(rxq)):
             try:

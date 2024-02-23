@@ -44,6 +44,7 @@ These control the SoapySDR device that is opened as the original input stream. N
 | `CHANS` | Semicolon separated list of comma separated settings per output channel: `centerfrequency,decimationfactor` | Unset |
 | `BASEPORT` | Port to start counting from for output channels. | 1234 |
 | `NUMBUFS` | Number of receive buffers to use. Each one allocates 2 \* 8 \* MTU bytes, where MTU is set by the SoapySDR driver in use. If you are having problems with buffer overflows, setting this higher will increase the time between overflows at the expense of increased RAM usage and more data lost per overflow. | 100 |
+| `EXIT_ON_ERROR` | Set to any value to fully restart the script on a SoapySDR error instead of trying to reinitialize the device | unset |
 
 ## Docker Compose
 
