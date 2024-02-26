@@ -10,6 +10,7 @@ from SoapySDR import Device, SoapySDR_errToStr, SOAPY_SDR_RX, SOAPY_SDR_CF32
 from threading import Thread, Event
 from time import time, sleep
 from queue import Queue, Full
+from _thread import interrupt_main
 
 def rx_thread(sdrcfg, rxStream, rxcfg, tx_init, inbufs, rxq):
     prctl.set_name("rx")
@@ -54,7 +55,8 @@ def rx_thread(sdrcfg, rxStream, rxcfg, tx_init, inbufs, rxq):
             sdr.deactivateStream(rxStream)
             sdr.closeStream(rxStream)
             if environ.get("EXIT_ON_ERROR"):
-              exit()
+              print("Quitting script...")
+              interrupt_main()
             else:
               return
 
