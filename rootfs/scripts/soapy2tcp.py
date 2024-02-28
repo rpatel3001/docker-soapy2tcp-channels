@@ -46,6 +46,7 @@ def rx_thread(sdrcfg, rxStream, rxcfg, tx_init, inbufs, rxq):
 
     status = sdr.readStream(rxStream, [inbufs[bufidx]], rxcfg["mtu"])
     print(f"[rx] Actual stream transfer size: {status.ret}/{rxcfg['mtu']}")
+    realmtu = status.ret
 
     while True:
         status = sdr.readStream(rxStream, [inbufs[bufidx]], rxcfg["mtu"])
@@ -55,10 +56,13 @@ def rx_thread(sdrcfg, rxStream, rxcfg, tx_init, inbufs, rxq):
             sdr.deactivateStream(rxStream)
             sdr.closeStream(rxStream)
             if environ.get("EXIT_ON_ERROR"):
-              print("Quitting script...")
+              print("[rx] Quitting script...")
               interrupt_main()
             else:
+              print("[rx] Quitting thread...")
               return
+        elif samps < realmtu:
+            print(f"[rx] Got only {samps} samples, expected {realmtu}")
 
         for i in range(len(rxq)):
             try:
@@ -156,6 +160,7 @@ def tx_thread(rxcfg, chancfg, tx_init, inbufs, rxq):
                 except BaseException:
                     print(f"[tx {chancfg['idx']}] Disconnected from {addr}")
                     tx_init[txcfg['idx']].clear()
+                    return
 
 
 # wrapper to catch exceptions and restart threads
