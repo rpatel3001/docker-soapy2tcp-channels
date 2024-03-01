@@ -56,11 +56,13 @@ def rx_thread(sdrcfg, rxStream, rxcfg, tx_init, inbufs, rxq):
             sdr.deactivateStream(rxStream)
             sdr.closeStream(rxStream)
             if environ.get("EXIT_ON_ERROR"):
-              print("[rx] Quitting script...")
-              raise OverflowError
+                print("[rx] Quitting script...")
+                for i in range(len(rxq)):
+                    rxq[i].put_nowait((-1, -1))
+                raise StopIteration
             else:
-              print("[rx] Quitting thread...")
-              return
+                print("[rx] Restarting thread...")
+                return
         elif samps < realmtu:
             print(f"[rx] Got only {samps} samples, expected {realmtu}")
 
@@ -142,6 +144,9 @@ def tx_thread(rxcfg, chancfg, tx_init, inbufs, rxq):
 
             while True:
                 bufidx, insamps = rxq.get() # receive a buffer index and length
+                if bufidx < 0:
+                    print(f"[tx {chancfg['idx']}] Got negative bufidx, quitting thread")
+                    raise StopIteration
                 decsamps = insamps // chancfg['deci']
                 outsamps = decsamps * 2
                 # copy out the received samples
@@ -169,7 +174,7 @@ def thread_wrapper(func, *args):
         try:
             print(f"[{func.__name__}] starting thread")
             func(*args)
-        except OverflowError:
+        except StopIteration:
             print(traceback.format_exc())
             print(f"[{func.__name__}] exception; quitting script")
             return
