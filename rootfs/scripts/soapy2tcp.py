@@ -57,7 +57,7 @@ def rx_thread(sdrcfg, rxStream, rxcfg, tx_init, inbufs, rxq):
             sdr.closeStream(rxStream)
             if environ.get("EXIT_ON_ERROR"):
               print("[rx] Quitting script...")
-              interrupt_main()
+              raise OverflowError
             else:
               print("[rx] Quitting thread...")
               return
@@ -169,6 +169,10 @@ def thread_wrapper(func, *args):
         try:
             print(f"[{func.__name__}] starting thread")
             func(*args)
+        except OverflowError:
+            print(traceback.format_exc())
+            print(f"[{func.__name__}] exception; quitting script")
+            return
         except BaseException:
             print(traceback.format_exc())
             print(f"[{func.__name__}] exception; restarting thread")
