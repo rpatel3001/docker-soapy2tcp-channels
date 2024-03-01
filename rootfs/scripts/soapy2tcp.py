@@ -135,37 +135,46 @@ def tx_thread(rxcfg, chancfg, tx_init, inbufs, rxq):
         # wait for a connection, then signal RX thread to push to the queue
         sock.bind(("0.0.0.0", chancfg["baseport"] + chancfg["idx"]))
         sock.listen()
-        conn, addr = sock.accept()
-        tx_init[chancfg["idx"]].set()
 
-        with conn:
-            print(f"[tx {chancfg['idx']}] Connection accepted from {addr}")
-            conn.sendall(b"RTL0\x00\x00\x00\x00\x00\x00\x00\x00") # rtl-tcp header
+        while True:
 
-            while True:
-                bufidx, insamps = rxq.get() # receive a buffer index and length
-                if bufidx < 0:
-                    print(f"[tx {chancfg['idx']}] Got negative bufidx, quitting thread")
-                    raise StopIteration
-                decsamps = insamps // chancfg['deci']
-                outsamps = decsamps * 2
-                # copy out the received samples
-                sigbuf = np.array(inbufs[bufidx][:insamps], fdtype, order='C')
-                if chancfg['deci'] == 1:
-                    # if no decimation, just scale and shift, don't mix/filter
-                    outbuf[:outsamps] = fastscale(sigbuf.view(np.float32))
-                else:
-                    fastmult(sigbuf, mix[offset:offset+insamps]) # mix with LO
-                    offset = (offset + insamps) % mixper
-                    fastfilt(sos, sigbuf, zi) # filter
-                    decbuf[:decsamps] = sigbuf[:insamps:chancfg['deci']] # decimate
-                    outbuf[:outsamps] = fastshift(decbuf[:decsamps].view(np.float32)) # shift to uint8 range
+            conn, addr = sock.accept()
+            tx_init[chancfg["idx"]].set()
+
+            with conn:
                 try:
-                    conn.sendall(outbuf[:outsamps])
-                except BaseException:
-                    print(f"[tx {chancfg['idx']}] Disconnected from {addr}")
-                    tx_init[txcfg['idx']].clear()
-                    return
+                    print(f"[tx {chancfg['idx']}] Connection accepted from {addr}")
+                    conn.sendall(b"RTL0\x00\x00\x00\x00\x00\x00\x00\x00") # rtl-tcp header
+
+                    while True:
+                        bufidx, insamps = rxq.get() # receive a buffer index and length
+                        if bufidx < 0:
+                            print(f"[tx {chancfg['idx']}] Got negative bufidx, quitting thread")
+                            raise StopIteration
+                        decsamps = insamps // chancfg['deci']
+                        outsamps = decsamps * 2
+                        # copy out the received samples
+                        sigbuf = np.array(inbufs[bufidx][:insamps], fdtype, order='C')
+                        if chancfg['deci'] == 1:
+                            # if no decimation, just scale and shift, don't mix/filter
+                            outbuf[:outsamps] = fastscale(sigbuf.view(np.float32))
+                        else:
+                            fastmult(sigbuf, mix[offset:offset+insamps]) # mix with LO
+                            offset = (offset + insamps) % mixper
+                            fastfilt(sos, sigbuf, zi) # filter
+                            decbuf[:decsamps] = sigbuf[:insamps:chancfg['deci']] # decimate
+                            outbuf[:outsamps] = fastshift(decbuf[:decsamps].view(np.float32)) # shift to uint8 range
+
+                        conn.sendall(outbuf[:outsamps])
+
+                except BaseException as err:
+                    print(f"[tx {chancfg['idx']}] Disconnected from {addr} ({err})")
+                    tx_init[chancfg["idx"]].clear()
+                    while not rxq.empty():
+                        rxq.get()
+
+                    if not isinstance(err, ConnectionError):
+                        raise err
 
 
 # wrapper to catch exceptions and restart threads
