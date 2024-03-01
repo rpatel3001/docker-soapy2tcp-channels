@@ -8,9 +8,14 @@ if [[ -z "$SOAPY" ]]; then
     sleep 86400
 fi
 
+retry_seconds=1
 while ! SoapySDRUtil --find=$SOAPY; do
-    echo "SoapySDR device not found!"
-    sleep 86400
+    echo "SoapySDR device not found, retrying in $retry_seconds seconds!"
+    sleep $retry_seconds
+    retry_seconds=$((retry_seconds + 1))
+    if (( retry_seconds > 60 )); then
+        retry_seconds=60
+    fi
 done
 
 python -u /scripts/soapy2tcp.py 2>&1 | stdbuf -o0 awk '{print "[soapy] " strftime("%Y/%m/%d %H:%M:%S", systime()) " " $0}'
