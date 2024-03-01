@@ -134,6 +134,7 @@ def tx_thread(rxcfg, chancfg, tx_init, inbufs, rxq):
 
         # wait for a connection, then signal RX thread to push to the queue
         sock.bind(("0.0.0.0", chancfg["baseport"] + chancfg["idx"]))
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.listen()
 
         while True:
