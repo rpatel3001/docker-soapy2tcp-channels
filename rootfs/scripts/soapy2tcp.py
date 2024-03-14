@@ -57,8 +57,6 @@ def rx_thread(sdrcfg, rxStream, rxcfg, tx_init, inbufs, rxq):
             sdr.closeStream(rxStream)
             if environ.get("EXIT_ON_ERROR"):
                 print("[rx] Quitting script...")
-                for i in range(len(rxq)):
-                    rxq[i].put_nowait((-1, -1))
                 raise StopIteration
             else:
                 print("[rx] Restarting thread...")
@@ -185,12 +183,11 @@ def thread_wrapper(func, *args):
             print(f"[{func.__name__}] starting thread")
             func(*args)
         except StopIteration:
-            print(traceback.format_exc())
-            print(f"[{func.__name__}] exception; quitting script")
+            print(f"[{func.__name__}] StopIteration received; quitting thread")
             return
         except BaseException:
             print(traceback.format_exc())
-            print(f"[{func.__name__}] exception; restarting thread")
+            print(f"[{func.__name__}] unexpected exception; restarting thread")
         else:
             print(f"[{func.__name__}] thread function returned; restarting thread")
         sleep(1)
@@ -238,7 +235,7 @@ def main():
         chancfg = {"idx": i, "fc": fc, "deci": deci, **txcfg}
         rxq.append(Queue(rxcfg["numbufs"]))
         tx_init.append(Event())
-        Thread(name=f"tx {i}", target=thread_wrapper, args=(tx_thread, rxcfg, chancfg, tx_init, inbufs, rxq[i])).start()
+        Thread(name=f"tx {i}", target=thread_wrapper, daemon=True, args=(tx_thread, rxcfg, chancfg, tx_init, inbufs, rxq[i])).start()
 
     # start a thread to receive samples from the SDR
     rxt = Thread(name="rx", target=thread_wrapper, args=(rx_thread, sdrcfg, rxStream, rxcfg, tx_init, inbufs, rxq))
