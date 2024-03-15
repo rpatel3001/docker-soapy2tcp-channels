@@ -11,6 +11,7 @@ from threading import Thread, Event
 from time import time, sleep
 from queue import Queue, Full
 from _thread import interrupt_main
+import signal
 
 def rx_thread(sdrcfg, rxStream, rxcfg, tx_init, inbufs, rxq):
     prctl.set_name("rx")
@@ -57,7 +58,7 @@ def rx_thread(sdrcfg, rxStream, rxcfg, tx_init, inbufs, rxq):
             sdr.closeStream(rxStream)
             if environ.get("EXIT_ON_ERROR"):
                 print("[rx] Quitting script...")
-                raise StopIteration
+                signal.raise_signal(signal.SIGTERM)
             else:
                 print("[rx] Restarting thread...")
                 return
@@ -235,7 +236,7 @@ def main():
         chancfg = {"idx": i, "fc": fc, "deci": deci, **txcfg}
         rxq.append(Queue(rxcfg["numbufs"]))
         tx_init.append(Event())
-        Thread(name=f"tx {i}", target=thread_wrapper, daemon=True, args=(tx_thread, rxcfg, chancfg, tx_init, inbufs, rxq[i])).start()
+        Thread(name=f"tx {i}", target=thread_wrapper, args=(tx_thread, rxcfg, chancfg, tx_init, inbufs, rxq[i])).start()
 
     # start a thread to receive samples from the SDR
     rxt = Thread(name="rx", target=thread_wrapper, args=(rx_thread, sdrcfg, rxStream, rxcfg, tx_init, inbufs, rxq))
